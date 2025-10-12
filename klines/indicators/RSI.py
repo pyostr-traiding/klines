@@ -1,7 +1,7 @@
 from typing import List, Union
 
-from indicators.base import _KlinesBase
-from indicators.schema.RSI import RSISchema, StochRSISchema, PredictRSIResultSchema, PredictStochRSIResultSchema
+from klines.base import _KlinesBase
+from klines.schema.RSI import RSISchema, StochRSISchema, PredictRSIResultSchema, PredictStochRSIResultSchema
 
 
 def simple_sma(values: list[float], period: int) -> float:

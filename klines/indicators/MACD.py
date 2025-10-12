@@ -1,8 +1,8 @@
 from typing import List
 import pandas as pd
 
-from indicators.base import _KlinesBase
-from indicators.schema.MACD import MACDSchema
+from klines.base import _KlinesBase
+from klines.schema.MACD import MACDSchema
 
 
 class MACDIndicator(_KlinesBase):

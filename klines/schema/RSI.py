@@ -1,6 +1,6 @@
 from typing import List
 
-from indicators.schema.base_indicator import BaseIndicatorSchema
+from klines.schema.base_indicator import BaseIndicatorSchema
 
 
 class RSISchema(BaseIndicatorSchema):

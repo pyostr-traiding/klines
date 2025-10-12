@@ -1,4 +1,4 @@
-from indicators.schema.base_indicator import BaseIndicatorSchema
+from klines.schema.base_indicator import BaseIndicatorSchema
 
 
 class ADXSchema(BaseIndicatorSchema):

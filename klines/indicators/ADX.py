@@ -1,8 +1,8 @@
 from typing import List, Literal
 
-from indicators.base import _KlinesBase
-from indicators.schema.ADX import ADXSchema
-from indicators.schema.kline import CandleSchema
+from klines.base import _KlinesBase
+from klines.schema.ADX import ADXSchema
+from klines.schema.kline import CandleSchema
 
 Mode = Literal["simple", "wilder", "ema"]
 

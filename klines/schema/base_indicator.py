@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from indicators.utils import ms_to_dt
+from klines.utils import ms_to_dt
 
 
 class BaseIndicatorSchema(BaseModel):

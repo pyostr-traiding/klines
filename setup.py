@@ -16,8 +16,6 @@ setup(
     author="4erni pidor",
     author_email="pyostr@gmail.com",
     description="Klines module for trading",
-    long_description=open("README.md", encoding="utf-8").read(),
-    long_description_content_type="text/markdown",
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",

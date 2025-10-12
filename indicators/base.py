@@ -1,10 +1,12 @@
-import time
+import os
 import json
 
 from typing import List
 
+import redis
+from dotenv import load_dotenv
 
-from .schema.kline import KlineSchema, CandleSchema
+from indicators.schema.kline import KlineSchema, CandleSchema
 from .utils import ms_to_dt
 
 
@@ -16,7 +18,6 @@ def list_to_schema(
     """
     Преобразовать список свечей в список схем
     """
-
     return [
         KlineSchema(
             topic=f'kline.{interval}.{symbol}',
@@ -24,16 +25,15 @@ def list_to_schema(
             interval=interval,
             data=[
                 CandleSchema(
-                    start=k[0],
-                    end=k[0],
+                    start=k['ts'],
                     interval=interval,
-                    open=k[1],
-                    close=k[4],
-                    high=k[2],
-                    low=k[3],
-                    volume=k[5],
-                    turnover=k[6],
-                    confirm=True,
+                    open=k['o'],
+                    close=k['c'],
+                    high=k['h'],
+                    low=k['l'],
+                    volume=k['v'],
+                    turnover=k['t'],
+                    dt=k['dt']
                 )
             ],
         )
@@ -67,11 +67,7 @@ class _KlinesBase:
         self.end = end
 
         print(f'[{symbol} {interval}] Загрузка данный')
-        self.history = self._get_history(
-            symbol=symbol,
-            interval=interval,
-            end=end,
-        )
+        self.history = self._get_history()
         print(f'[{symbol} {interval}] История загружена [{len(self.history)} свечей]')
         self.check_and_trim_history()
         self.length = len(self.history)
@@ -97,20 +93,28 @@ class _KlinesBase:
         return f"{self.end} | {dt}"
 
 
-    @staticmethod
-    def _get_history(
-            symbol: str,
-            interval: int,
-            end: int = None,
-            limit: int = 1000,
-    ) -> List[KlineSchema]:
+    def _get_history(self,) -> List[KlineSchema]:
         """
         Возвращает список свечей в порядке старая -> новая
         """
+        load_dotenv()
+        server_redis = redis.Redis(
+            host=os.getenv('REDIS_HOST'),
+            port=int(os.getenv('REDIS_PORT')),
+            password=os.getenv('REDIS_PASSWORD'),
+            db=0,
+            decode_responses=True
+        )
+        key = f'candles:{self.symbol}:{self.interval}:{self.exchange}'
+        res = server_redis.zrevrange(key, 0, 999)  # с конца (самые новые)
+        if not res:
+            print('Ошибка получения свечей истории')
+            exit()
+        klines = [json.loads(i) for i in res]
         return list_to_schema(
-            interval=interval,
-            symbol=symbol,
-            # data=klines
+            interval=self.interval,
+            symbol=self.symbol,
+            data=klines
         )
 
     def check_kline_sequence(self) -> bool:
@@ -127,11 +131,7 @@ class _KlinesBase:
             curr = self.history[i].data[0].start
             if curr - prev != expected_diff:
                 print('Последовательность нарушена!')
-
-                history = self._get_history(
-                    symbol=self.symbol,
-                    interval=self.interval,
-                )
+                history = self._get_history()
 
                 self.history = list_to_schema(
                     interval=self.interval,

@@ -1,8 +1,5 @@
 from typing import List, Union
 
-from select import select
-
-from app.API.RSI.schema import RSIMarkersSchema
 from indicators.base import _KlinesBase
 from indicators.schema.RSI import RSISchema, StochRSISchema, PredictRSIResultSchema, PredictStochRSIResultSchema
 

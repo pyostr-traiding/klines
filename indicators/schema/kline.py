@@ -15,7 +15,7 @@ class CandleSchema(BaseModel):
     low: str
     volume: str
     turnover: str
-    confirm: bool
+    confirm: bool = True
     timestamp: Optional[int] = None
 
     @property
@@ -24,7 +24,7 @@ class CandleSchema(BaseModel):
         Возвращает start в формате: timestamp | дата-время
         """
         dt = ms_to_dt(self.start)
-        return f"{self.start} | {dt}"
+        return f"{self.start} | {dt} UTC"
 
     @property
     def end_str(self) -> str:
@@ -32,7 +32,7 @@ class CandleSchema(BaseModel):
         Возвращает start в формате: timestamp | дата-время
         """
         dt = ms_to_dt(self.end)
-        return f"{self.end} | {dt}"
+        return f"{self.end} | {dt} UTC"
 
 class KlineSchema(BaseModel):
     topic: str

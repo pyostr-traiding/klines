@@ -6,7 +6,7 @@ from typing import List
 import redis
 from dotenv import load_dotenv
 
-from indicators.schema.kline import KlineSchema, CandleSchema
+from schema.kline import KlineSchema, CandleSchema
 from .utils import ms_to_dt
 
 

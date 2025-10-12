@@ -1,7 +1,7 @@
 from .base import _KlinesBase
-from indicators.indicators.ADX import ADXIndicator
-from indicators.indicators.MACD import MACDIndicator
-from indicators.indicators.RSI import RSIIndicator
+from indicators.ADX import ADXIndicator
+from indicators.MACD import MACDIndicator
+from indicators.RSI import RSIIndicator
 
 
 class Klines(

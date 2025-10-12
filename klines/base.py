@@ -68,7 +68,6 @@ class _KlinesBase:
         self.exchange = exchange
         self.end = end
         self.redis_candles = redis_candles
-        print(f'[{symbol} {interval}] Загрузка данный')
         self.history = self._get_history()
         print(f'[{symbol} {interval}] История загружена [{len(self.history)} свечей]')
         self.check_and_trim_history()

@@ -6,8 +6,8 @@ from typing import List
 import redis
 from dotenv import load_dotenv
 
-from schema.kline import KlineSchema, CandleSchema
-from .utils import ms_to_dt
+from klines.schema.kline import KlineSchema, CandleSchema
+from klines.utils import ms_to_dt
 
 
 def list_to_schema(

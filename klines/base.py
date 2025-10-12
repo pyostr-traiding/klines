@@ -1,10 +1,9 @@
-import os
 import json
 
 from typing import List
 
-import redis
 from dotenv import load_dotenv
+from redis import Redis
 
 from klines.schema.kline import KlineSchema, CandleSchema
 from klines.utils import ms_to_dt
@@ -52,11 +51,14 @@ class _KlinesBase:
 
     last_kline: CandleSchema
 
+    redis_candles: Redis
+
     def __init__(
             self,
             symbol: str,
             interval: int,
             exchange: str,
+            redis_candles: Redis,
             end: int = None,
             max_length: int = 1000,
     ):
@@ -65,7 +67,7 @@ class _KlinesBase:
         self.interval = interval
         self.exchange = exchange
         self.end = end
-
+        self.redis_candles = redis_candles
         print(f'[{symbol} {interval}] Загрузка данный')
         self.history = self._get_history()
         print(f'[{symbol} {interval}] История загружена [{len(self.history)} свечей]')
@@ -98,15 +100,9 @@ class _KlinesBase:
         Возвращает список свечей в порядке старая -> новая
         """
         load_dotenv()
-        server_redis = redis.Redis(
-            host=os.getenv('REDIS_HOST'),
-            port=int(os.getenv('REDIS_PORT')),
-            password=os.getenv('REDIS_PASSWORD'),
-            db=0,
-            decode_responses=True
-        )
+
         key = f'candles:{self.symbol}:{self.interval}:{self.exchange}'
-        res = server_redis.zrevrange(key, 0, 999)  # с конца (самые новые)
+        res = self.redis_candles.zrevrange(key, 0, 999)  # с конца (самые новые)
         if not res:
             print('Ошибка получения свечей истории')
             exit()

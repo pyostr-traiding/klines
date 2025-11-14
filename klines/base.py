@@ -17,8 +17,11 @@ def list_to_schema(
     """
     Преобразовать список свечей в список схем
     """
-    return [
-        KlineSchema(
+    result = []
+    for k in reversed(data):
+        if isinstance(k, KlineSchema):
+            continue
+        kline = KlineSchema(
             topic=f'kline.{interval}.{symbol}',
             symbol=symbol,
             interval=interval,
@@ -36,8 +39,9 @@ def list_to_schema(
                 )
             ],
         )
-        for k in reversed(data)
-    ]
+        result.append(kline)
+    return result
+
 
 class _KlinesBase:
     max_length: int

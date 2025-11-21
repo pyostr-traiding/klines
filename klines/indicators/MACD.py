@@ -1,187 +1,197 @@
 from typing import List, Optional
-import pandas as pd
 from klines.base import _KlinesBase
 from klines.schema.MACD import MACDSchema
 
 
 class MACDIndicator(_KlinesBase):
-    """
-    Индикатор MACD, рассчитанный единообразно:
-    - EMA с adjust=False
-    - MACD/Signal/Hist считаются по всей истории, а не по "скользящим окнам"
-    """
-
-    # Параметры MACD по умолчанию
     FAST_SPAN = 12
     SLOW_SPAN = 26
     SIGNAL_SPAN = 9
 
-    @classmethod
-    def _build_macd_df(
-        cls,
-        closes: List[float],
-        span_fast: int = FAST_SPAN,
-        span_slow: int = SLOW_SPAN,
-        span_signal: int = SIGNAL_SPAN,
-    ) -> pd.DataFrame:
-        """
-        Строит DataFrame с колонками:
-        close, EMA_fast, EMA_slow, MACD, Signal, Hist
-        На ВСЮ историю, как это делает нормальный терминал.
-        """
-        df = pd.DataFrame(closes, columns=["close"])
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-        # EMA
-        df["EMA_fast"] = df["close"].ewm(span=span_fast, adjust=False).mean()
-        df["EMA_slow"] = df["close"].ewm(span=span_slow, adjust=False).mean()
+        # внутренние EMA (ленивая инициализация)
+        self.ema_fast: Optional[float] = None
+        self.ema_slow: Optional[float] = None
+        self.signal: Optional[float] = None
 
-        # MACD и сигнальная
-        df["MACD"] = df["EMA_fast"] - df["EMA_slow"]
-        df["Signal"] = df["MACD"].ewm(span=span_signal, adjust=False).mean()
-        df["Hist"] = df["MACD"] - df["Signal"]
+        # история MACD
+        self.macd_history: List[MACDSchema] = []
 
-        return df
-
-    @classmethod
-    def _last_macd_schema(
-        cls,
-        df: pd.DataFrame,
-        kline_ms: int,
-        round_digits: int = 2,
-    ) -> MACDSchema:
-        """
-        Берёт последний ряд из df и упаковывает в MACDSchema.
-        """
-        last = df.iloc[-1]
-        return MACDSchema(
-            hist=round(float(last["Hist"]), round_digits),
-            macd=round(float(last["MACD"]), round_digits),
-            sign=round(float(last["Signal"]), round_digits),
-            kline_ms=kline_ms,
-        )
+        # коэффициенты сглаживания
+        self.alpha_fast = 2 / (self.FAST_SPAN + 1)
+        self.alpha_slow = 2 / (self.SLOW_SPAN + 1)
+        self.alpha_signal = 2 / (self.SIGNAL_SPAN + 1)
 
     # -------------------------------------------------------------------------
-    # Текущее значение MACD
+    # ИНИЦИАЛИЗАЦИЯ ИЗ HISTORY (lenient)
     # -------------------------------------------------------------------------
-    def current_MACD(
-        self,
-        min_bars: int = 50,
-    ) -> Optional[MACDSchema]:
+    def _lazy_init_from_history(self):
         """
-        Текущее значение MACD по всей доступной истории.
-        min_bars — минимальное количество свечей для более-менее стабильного MACD.
+        Выполняется один раз: инициализация EMA по реальной истории,
+        расчёт всего MACD, заполнение macd_history.
         """
-        if len(self.history) < min_bars:
-            return None  # или можешь бросать исключение, если так удобнее
+
+        if self.ema_fast is not None:
+            return  # уже инициализировано
+
+        if not self.history:
+            return
 
         closes = [float(i.data[0].close) for i in self.history]
-        df = self._build_macd_df(closes)
+        n = len(closes)
+from typing import List, Optional
+from klines.base import _KlinesBase
+from klines.schema.MACD import MACDSchema
 
-        kline_ms = int(self.history[-1].data[0].start)
-        return self._last_macd_schema(df, kline_ms)
+
+class MACDIndicator(_KlinesBase):
+    FAST_SPAN = 12
+    SLOW_SPAN = 26
+    SIGNAL_SPAN = 9
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # внутренние EMA (ленивая инициализация)
+        self.ema_fast: Optional[float] = None
+        self.ema_slow: Optional[float] = None
+        self.signal: Optional[float] = None
+
+        # история MACD
+        self.macd_history: List[MACDSchema] = []
+
+        # коэффициенты сглаживания
+        self.alpha_fast = 2 / (self.FAST_SPAN + 1)
+        self.alpha_slow = 2 / (self.SLOW_SPAN + 1)
+        self.alpha_signal = 2 / (self.SIGNAL_SPAN + 1)
 
     # -------------------------------------------------------------------------
-    # История MACD
+    # ИНИЦИАЛИЗАЦИЯ ИЗ HISTORY (lenient)
     # -------------------------------------------------------------------------
-    def history_MACD(
-        self,
-        length: int = 30,
-        min_bars: int = 50,
-    ) -> List[MACDSchema]:
+    def _lazy_init_from_history(self):
         """
-        Возвращает последние `length` значений MACD.
-        MACD считается по всей истории, а не по скользящим окнам.
+        Выполняется один раз: инициализация EMA по реальной истории,
+        расчёт всего MACD, заполнение macd_history.
         """
-        macd_values: List[MACDSchema] = []
 
-        total_candles = len(self.history)
-        if total_candles < max(min_bars, length):
-            return macd_values
+        if self.ema_fast is not None:
+            return  # уже инициализировано
+
+        if not self.history:
+            return
 
         closes = [float(i.data[0].close) for i in self.history]
-        df = self._build_macd_df(closes)
+        n = len(closes)
 
-        # Берём последние `length` записей
-        length = min(length, len(df))
-        start_idx = len(df) - length
+        # начальные значения EMA по первым данным
+        self.ema_fast = closes[0]
+        self.ema_slow = closes[0]
+        self.signal = 0.0
 
-        for idx in range(start_idx, len(df)):
-            row = df.iloc[idx]
-            candle = self.history[idx]  # тот же индекс для времени
-            kline_ms = int(candle.data[0].start)
+        self.macd_history.clear()
 
-            macd_values.append(
+        for idx in range(n):
+            close = closes[idx]
+            kline_ms = int(self.history[idx].data[0].start)
+
+            # EMA fast/slow
+            self.ema_fast = (close - self.ema_fast) * self.alpha_fast + self.ema_fast
+            self.ema_slow = (close - self.ema_slow) * self.alpha_slow + self.ema_slow
+
+            macd = self.ema_fast - self.ema_slow
+            self.signal = (macd - self.signal) * self.alpha_signal + self.signal
+
+            hist = macd - self.signal
+
+            self.macd_history.append(
                 MACDSchema(
-                    macd=round(float(row["MACD"]), 2),
-                    sign=round(float(row["Signal"]), 2),
-                    hist=round(float(row["Hist"]), 2),
+                    macd=round(float(macd), 4),
+                    sign=round(float(self.signal), 4),
+                    hist=round(float(hist), 4),
                     kline_ms=kline_ms,
                 )
             )
 
-        return macd_values
+    # -------------------------------------------------------------------------
+    # ТЕКУЩЕЕ ЗНАЧЕНИЕ MACD (часто вызывается)
+    # -------------------------------------------------------------------------
+    def current_MACD(self) -> Optional[MACDSchema]:
+        """
+        Гарантированно работает без предварительного update().
+        Инициализирует MACD по history при первом вызове.
+        """
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
+
+        if not self.macd_history:
+            return None
+
+        return self.macd_history[-1]
 
     # -------------------------------------------------------------------------
-    # Прогноз MACD (наивная линейная экстраполяция цены)
+    # ИСТОРИЯ MACD
+    # -------------------------------------------------------------------------
+    def history_MACD(self, length: int = 30) -> List[MACDSchema]:
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
+
+        return self.macd_history[-length:]
+
+    # -------------------------------------------------------------------------
+    # ПРОГНОЗ MACD
     # -------------------------------------------------------------------------
     def predict_MACD(
         self,
         steps_ahead: int = 7,
         trend_window: int = 5,
     ) -> List[MACDSchema]:
-        """
-        Теоретический прогноз MACD на N свечей вперёд.
-        Использует линейную экстраполяцию цены по последним трендам.
-        Очень грубая модель, использовать с осторожностью.
-        """
-        closes = [float(i.data[0].close) for i in self.history]
-        if len(closes) < 30:
-            raise ValueError("Недостаточно данных для прогноза (нужно хотя бы 30 свечей)")
 
-        df = self._build_macd_df(closes)
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
 
-        # Текущие значения
-        last_close = float(df["close"].iloc[-1])
-        ema_fast = float(df["EMA_fast"].iloc[-1])
-        ema_slow = float(df["EMA_slow"].iloc[-1])
-        signal = float(df["Signal"].iloc[-1])
+        if not self.history or len(self.history) < trend_window + 2:
+            return []
 
-        # Коэффициенты сглаживания
-        alpha_fast = 2 / (self.FAST_SPAN + 1)
-        alpha_slow = 2 / (self.SLOW_SPAN + 1)
-        alpha_signal = 2 / (self.SIGNAL_SPAN + 1)
+        last_close = float(self.history[-1].data[0].close)
+        prev_close = float(self.history[-trend_window].data[0].close)
 
-        # Линейный тренд
-        trend = (df["close"].iloc[-1] - df["close"].iloc[-trend_window]) / trend_window
+        trend = (last_close - prev_close) / trend_window
 
-        macd_values: List[MACDSchema] = []
-        start_time = int(self.history[-1].data[0].start)
-        step_ms = self.interval * 60_000  # минутный интервал в мс
+        # копии EMA, чтобы не портить реальные
+        ema_fast = self.ema_fast
+        ema_slow = self.ema_slow
+        signal = self.signal
+
+        results = []
+        step_ms = self.interval * 60_000
+        start_ms = int(self.history[-1].data[0].start)
 
         for step in range(1, steps_ahead + 1):
             next_close = last_close + trend * step
 
-            # обновляем EMA
-            ema_fast = (next_close - ema_fast) * alpha_fast + ema_fast
-            ema_slow = (next_close - ema_slow) * alpha_slow + ema_slow
+            ema_fast = (next_close - ema_fast) * self.alpha_fast + ema_fast
+            ema_slow = (next_close - ema_slow) * self.alpha_slow + ema_slow
 
             macd = ema_fast - ema_slow
-            signal = (macd - signal) * alpha_signal + signal
+            signal = (macd - signal) * self.alpha_signal + signal
+
             hist = macd - signal
 
-            macd_values.append(
+            results.append(
                 MACDSchema(
                     macd=round(float(macd), 4),
                     sign=round(float(signal), 4),
                     hist=round(float(hist), 4),
-                    kline_ms=start_time + step * step_ms,
+                    kline_ms=start_ms + step * step_ms,
                 )
             )
 
-        return macd_values
+        return results
 
     # -------------------------------------------------------------------------
-    # Поиск ближайшего разворота MACD (пересечение с Signal)
+    # ПОИСК РАЗВОРОТА MACD
     # -------------------------------------------------------------------------
     def predict_MACD_reversal(
         self,
@@ -189,58 +199,47 @@ class MACDIndicator(_KlinesBase):
         max_steps: int = 50,
         scenario: str = "auto",
     ):
-        """
-        Поиск вероятного разворота MACD (пересечение MACD и сигнальной линии).
-        scenario: "auto", "bullish", "bearish"
-        auto: направление выбирается на основе знака текущей гистограммы.
-        """
-        closes = [float(i.data[0].close) for i in self.history]
-        if len(closes) < 30:
-            raise ValueError("Недостаточно данных для анализа разворота")
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
 
-        df = self._build_macd_df(closes)
+        if not self.history or len(self.history) < trend_window + 2:
+            return None
 
-        # Текущие значения
-        last_close = float(df["close"].iloc[-1])
-        ema_fast = float(df["EMA_fast"].iloc[-1])
-        ema_slow = float(df["EMA_slow"].iloc[-1])
-        signal = float(df["Signal"].iloc[-1])
-        hist = float(df["Hist"].iloc[-1])
+        last_close = float(self.history[-1].data[0].close)
+        prev_close = float(self.history[-trend_window].data[0].close)
 
-        # Коэффициенты сглаживания
-        alpha_fast = 2 / (self.FAST_SPAN + 1)
-        alpha_slow = 2 / (self.SLOW_SPAN + 1)
-        alpha_signal = 2 / (self.SIGNAL_SPAN + 1)
+        base_trend = (last_close - prev_close) / trend_window
 
-        # Направление тренда по сценарию
-        base_trend = (df["close"].iloc[-1] - df["close"].iloc[-trend_window]) / trend_window
+        current_hist = self.macd_history[-1].hist if self.macd_history else 0
 
+        # определяем направление
         if scenario == "bullish":
-            trend = abs(base_trend) if base_trend != 0 else abs(df["close"].pct_change().iloc[-1]) * last_close
+            trend = abs(base_trend)
         elif scenario == "bearish":
-            trend = -abs(base_trend) if base_trend != 0 else -abs(df["close"].pct_change().iloc[-1]) * last_close
-        else:  # auto
-            if hist > 0:
-                trend = -abs(base_trend) if base_trend != 0 else -abs(df["close"].pct_change().iloc[-1]) * last_close
-            else:
-                trend = abs(base_trend) if base_trend != 0 else abs(df["close"].pct_change().iloc[-1]) * last_close
+            trend = -abs(base_trend)
+        else:
+            trend = -abs(base_trend) if current_hist > 0 else abs(base_trend)
 
-        start_time = int(self.history[-1].data[0].start)
+        ema_fast = self.ema_fast
+        ema_slow = self.ema_slow
+        signal = self.signal
+        prev_hist = current_hist
+
         step_ms = self.interval * 60_000
-
-        prev_hist = hist
+        start_ms = int(self.history[-1].data[0].start)
 
         for step in range(1, max_steps + 1):
             next_close = last_close + trend * step
 
-            ema_fast = (next_close - ema_fast) * alpha_fast + ema_fast
-            ema_slow = (next_close - ema_slow) * alpha_slow + ema_slow
+            ema_fast = (next_close - ema_fast) * self.alpha_fast + ema_fast
+            ema_slow = (next_close - ema_slow) * self.alpha_slow + ema_slow
 
             macd = ema_fast - ema_slow
-            signal = (macd - signal) * alpha_signal + signal
+            signal = (macd - signal) * self.alpha_signal + signal
+
             hist = macd - signal
 
-            # смена знака гистограммы = пересечение MACD и Signal
+            # пересечение
             if (prev_hist > 0 and hist <= 0) or (prev_hist < 0 and hist >= 0):
                 return {
                     "step": step,
@@ -248,10 +247,180 @@ class MACDIndicator(_KlinesBase):
                     "macd": round(float(macd), 4),
                     "signal": round(float(signal), 4),
                     "hist": round(float(hist), 4),
-                    "time_ms": start_time + step * step_ms,
+                    "time_ms": start_ms + step * step_ms,
                     "direction": "bearish" if prev_hist > 0 else "bullish",
                 }
 
             prev_hist = hist
 
-        return None  # разворот не найден в пределах max_steps
+        return None
+
+        # начальные значения EMA по первым данным
+        self.ema_fast = closes[0]
+        self.ema_slow = closes[0]
+        self.signal = 0.0
+
+        self.macd_history.clear()
+
+        for idx in range(n):
+            close = closes[idx]
+            kline_ms = int(self.history[idx].data[0].start)
+
+            # EMA fast/slow
+            self.ema_fast = (close - self.ema_fast) * self.alpha_fast + self.ema_fast
+            self.ema_slow = (close - self.ema_slow) * self.alpha_slow + self.ema_slow
+
+            macd = self.ema_fast - self.ema_slow
+            self.signal = (macd - self.signal) * self.alpha_signal + self.signal
+
+            hist = macd - self.signal
+
+            self.macd_history.append(
+                MACDSchema(
+                    macd=round(float(macd), 4),
+                    sign=round(float(self.signal), 4),
+                    hist=round(float(hist), 4),
+                    kline_ms=kline_ms,
+                )
+            )
+
+    # -------------------------------------------------------------------------
+    # ТЕКУЩЕЕ ЗНАЧЕНИЕ MACD (часто вызывается)
+    # -------------------------------------------------------------------------
+    def current_MACD(self) -> Optional[MACDSchema]:
+        """
+        Гарантированно работает без предварительного update().
+        Инициализирует MACD по history при первом вызове.
+        """
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
+
+        if not self.macd_history:
+            return None
+
+        return self.macd_history[-1]
+
+    # -------------------------------------------------------------------------
+    # ИСТОРИЯ MACD
+    # -------------------------------------------------------------------------
+    def history_MACD(self, length: int = 30) -> List[MACDSchema]:
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
+
+        return self.macd_history[-length:]
+
+    # -------------------------------------------------------------------------
+    # ПРОГНОЗ MACD
+    # -------------------------------------------------------------------------
+    def predict_MACD(
+        self,
+        steps_ahead: int = 7,
+        trend_window: int = 5,
+    ) -> List[MACDSchema]:
+
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
+
+        if not self.history or len(self.history) < trend_window + 2:
+            return []
+
+        last_close = float(self.history[-1].data[0].close)
+        prev_close = float(self.history[-trend_window].data[0].close)
+
+        trend = (last_close - prev_close) / trend_window
+
+        # копии EMA, чтобы не портить реальные
+        ema_fast = self.ema_fast
+        ema_slow = self.ema_slow
+        signal = self.signal
+
+        results = []
+        step_ms = self.interval * 60_000
+        start_ms = int(self.history[-1].data[0].start)
+
+        for step in range(1, steps_ahead + 1):
+            next_close = last_close + trend * step
+
+            ema_fast = (next_close - ema_fast) * self.alpha_fast + ema_fast
+            ema_slow = (next_close - ema_slow) * self.alpha_slow + ema_slow
+
+            macd = ema_fast - ema_slow
+            signal = (macd - signal) * self.alpha_signal + signal
+
+            hist = macd - signal
+
+            results.append(
+                MACDSchema(
+                    macd=round(float(macd), 4),
+                    sign=round(float(signal), 4),
+                    hist=round(float(hist), 4),
+                    kline_ms=start_ms + step * step_ms,
+                )
+            )
+
+        return results
+
+    # -------------------------------------------------------------------------
+    # ПОИСК РАЗВОРОТА MACD
+    # -------------------------------------------------------------------------
+    def predict_MACD_reversal(
+        self,
+        trend_window: int = 5,
+        max_steps: int = 50,
+        scenario: str = "auto",
+    ):
+        if self.ema_fast is None:
+            self._lazy_init_from_history()
+
+        if not self.history or len(self.history) < trend_window + 2:
+            return None
+
+        last_close = float(self.history[-1].data[0].close)
+        prev_close = float(self.history[-trend_window].data[0].close)
+
+        base_trend = (last_close - prev_close) / trend_window
+
+        current_hist = self.macd_history[-1].hist if self.macd_history else 0
+
+        # определяем направление
+        if scenario == "bullish":
+            trend = abs(base_trend)
+        elif scenario == "bearish":
+            trend = -abs(base_trend)
+        else:
+            trend = -abs(base_trend) if current_hist > 0 else abs(base_trend)
+
+        ema_fast = self.ema_fast
+        ema_slow = self.ema_slow
+        signal = self.signal
+        prev_hist = current_hist
+
+        step_ms = self.interval * 60_000
+        start_ms = int(self.history[-1].data[0].start)
+
+        for step in range(1, max_steps + 1):
+            next_close = last_close + trend * step
+
+            ema_fast = (next_close - ema_fast) * self.alpha_fast + ema_fast
+            ema_slow = (next_close - ema_slow) * self.alpha_slow + ema_slow
+
+            macd = ema_fast - ema_slow
+            signal = (macd - signal) * self.alpha_signal + signal
+
+            hist = macd - signal
+
+            # пересечение
+            if (prev_hist > 0 and hist <= 0) or (prev_hist < 0 and hist >= 0):
+                return {
+                    "step": step,
+                    "predicted_close": round(float(next_close), 4),
+                    "macd": round(float(macd), 4),
+                    "signal": round(float(signal), 4),
+                    "hist": round(float(hist), 4),
+                    "time_ms": start_ms + step * step_ms,
+                    "direction": "bearish" if prev_hist > 0 else "bullish",
+                }
+
+            prev_hist = hist
+
+        return None

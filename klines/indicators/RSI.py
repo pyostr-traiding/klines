@@ -206,7 +206,7 @@ class RSIIndicator(_KlinesBase):
     ) -> PredictStochRSIResultSchema | None:
         """
         Предсказывает цену, при которой %K Stochastic RSI попадет в целевой диапазон.
-        Если точное попадание не возможно, возвращает максимально приближенную цену.
+        Если точное попадание невозможно в пределах target_range от текущей цены, возвращает None.
         """
         min_history = rsi_period + stoch_period + k_period + d_period
         if len(self.history) < min_history:
@@ -215,17 +215,12 @@ class RSIIndicator(_KlinesBase):
         last_kline = self.history[-1]
         original_close = float(last_kline.data[0].close)
 
-        # Определяем границы поиска: ± target_range от текущей цены
+        # Определяем границы цены: ± target_range%
         lo = original_close * (1 - target_range / 100)
         hi = original_close * (1 + target_range / 100)
 
-        # Для стороны "sell" бинарный поиск переворачивается
-        if side == "sell":
-            lo, hi = hi, lo
-
         result_close = None
         result_k = result_d = result_ms = None
-        closest_diff = float('inf')
 
         try:
             for _ in range(max_iter):
@@ -241,23 +236,21 @@ class RSIIndicator(_KlinesBase):
                 )
                 k_val, d_val = stoch_rsi.value
 
-                # Рассчитываем разницу до "границы" (для buy 50, для sell 50 — можно настраивать)
-                target_k = 350 if side == "buy" else 70
-                diff = abs(k_val - target_k)
+                # Определяем цель по K
+                target_k = 40 if side == "buy" else 60
 
-                # Если попали в target ± target_range, сохраняем и выходим
-                if diff <= target_range:
+                # Проверяем, достигли ли мы цели K
+                if (side == "buy" and k_val <= target_k) or (side == "sell" and k_val >= target_k):
                     result_close = mid
                     result_k, result_d, result_ms = k_val, d_val, stoch_rsi.kline_ms
                     break
 
-                # Сохраняем максимально приближенную цену
-                if diff < closest_diff:
-                    closest_diff = diff
-                    result_close = mid
-                    result_k, result_d, result_ms = k_val, d_val, stoch_rsi.kline_ms
+                # Если K не достигнут и пределы цены исчерпаны
+                if mid <= lo or mid >= hi:
+                    result_close = None
+                    break
 
-                # Корректируем границы бинарного поиска
+                # Корректировка границ бинарного поиска
                 if side == "buy":
                     if k_val > target_k:
                         hi = mid
@@ -265,9 +258,9 @@ class RSIIndicator(_KlinesBase):
                         lo = mid
                 else:  # sell
                     if k_val < target_k:
-                        hi = mid
-                    else:
                         lo = mid
+                    else:
+                        hi = mid
         finally:
             last_kline.data[0].close = original_close
 
@@ -284,4 +277,5 @@ class RSIIndicator(_KlinesBase):
             k=round(result_k, 2),
             d=round(result_d, 2),
         )
+
 

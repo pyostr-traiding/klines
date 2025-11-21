@@ -143,12 +143,12 @@ class RSIIndicator(_KlinesBase):
 
     # ---------- PREDICT RSI ----------
     def predict_rsi(
-        self,
-        side: str,
-        rsi: float,
-        target_range: str,
-        period: int = 14,
-        max_iter: int = 40,
+            self,
+            side: str,
+            rsi: float,
+            target_range: float,  # теперь float, а не str
+            period: int = 14,
+            max_iter: int = 40,
     ) -> Union[PredictRSIResultSchema, None]:
         history = self.history[-period:]
         if not history:
@@ -156,9 +156,9 @@ class RSIIndicator(_KlinesBase):
 
         closes = [float(k.data[0].close) for k in history]
         start_time = int(history[-1].data[0].start)
-        from_lev, to_lev = map(float, target_range.split("-"))
         original_close = closes[-1]
 
+        # Определяем диапазон для бинарного поиска
         lo, hi = (original_close * 0.5, original_close) if side == "buy" else (original_close, original_close * 1.5)
         result_close = result_rsi = None
 
@@ -167,17 +167,18 @@ class RSIIndicator(_KlinesBase):
             test_closes = closes[:-1] + [mid]
             test_rsi = self._calculate_RSI(test_closes, start_time, period).value
 
-            if from_lev <= test_rsi <= to_lev:
+            # Проверяем попадание в target ± target_range
+            if abs(test_rsi - rsi) <= target_range:
                 result_close = mid
                 result_rsi = test_rsi
                 break
 
             if side == "buy":
-                hi = mid if test_rsi > to_lev else hi
-                lo = lo if test_rsi > to_lev else mid
+                hi = mid if test_rsi > rsi + target_range else hi
+                lo = lo if test_rsi > rsi + target_range else mid
             else:
-                lo = mid if test_rsi < from_lev else lo
-                hi = hi if test_rsi < from_lev else mid
+                lo = mid if test_rsi < rsi - target_range else lo
+                hi = hi if test_rsi < rsi - target_range else mid
 
         if result_close is None:
             return None
@@ -194,20 +195,19 @@ class RSIIndicator(_KlinesBase):
 
     # ---------- PREDICT STOCH RSI ----------
     def predict_stoch_rsi(
-        self,
-        side: str,
-        target_range: str,
-        rsi_period: int = 14,
-        stoch_period: int = 14,
-        k_period: int = 3,
-        d_period: int = 3,
-        max_iter: int = 40,
+            self,
+            side: str,
+            target_range: float,  # float вместо строки
+            rsi_period: int = 14,
+            stoch_period: int = 14,
+            k_period: int = 3,
+            d_period: int = 3,
+            max_iter: int = 40,
     ) -> Union[PredictStochRSIResultSchema, None]:
         min_history = rsi_period + stoch_period + k_period + d_period
         if len(self.history) < min_history:
             raise ValueError("Недостаточно истории для предсказания Stochastic RSI")
 
-        from_lev, to_lev = map(float, target_range.split("-"))
         last_kline = self.history[-1]
         original_close = float(last_kline.data[0].close)
         lo, hi = (original_close * 0.1, original_close) if side == "buy" else (original_close, original_close * 0.1)
@@ -228,7 +228,8 @@ class RSIIndicator(_KlinesBase):
                 )
                 k_val, d_val = stoch_rsi.value
 
-                if from_lev <= k_val <= to_lev:
+                # Попадание в target ± target_range
+                if abs(k_val - 50) <= target_range:  # 50 здесь можно заменить на текущее k_val, если нужно
                     result_close = mid
                     result_k = k_val
                     result_d = d_val
@@ -236,11 +237,11 @@ class RSIIndicator(_KlinesBase):
                     break
 
                 if side == "buy":
-                    hi = mid if k_val > to_lev else hi
-                    lo = lo if k_val > to_lev else mid
+                    hi = mid if k_val > 50 + target_range else hi
+                    lo = lo if k_val > 50 + target_range else mid
                 else:
-                    lo = mid if k_val < from_lev else lo
-                    hi = hi if k_val < from_lev else mid
+                    lo = mid if k_val < 50 - target_range else lo
+                    hi = hi if k_val < 50 - target_range else mid
         finally:
             last_kline.data[0].close = original_close
 

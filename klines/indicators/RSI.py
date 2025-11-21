@@ -277,5 +277,3 @@ class RSIIndicator(_KlinesBase):
             k=round(result_k, 2),
             d=round(result_d, 2),
         )
-
-

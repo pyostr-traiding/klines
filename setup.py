@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="klines",                  # название пакета
-    version="0.2.0",                # версия
+    version="0.3.0",                # версия
     packages=find_packages(),        # автоматически найдёт папку klines
     install_requires=[               # зависимости (если есть)
         # "numpy>=1.25",

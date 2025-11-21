@@ -1,7 +1,6 @@
 # klines/indicators/RSI.py
 
-from typing import List, Union
-
+from typing import List, Union, Optional
 from klines.base import _KlinesBase
 from klines.schema.RSI import (
     RSISchema,
@@ -19,20 +18,14 @@ def simple_sma(values: list[float], period: int) -> float:
 
 class RSIIndicator(_KlinesBase):
     history_rsi: List[RSISchema] = []
-    rsi: RSISchema
-    stoch_rsi: StochRSISchema
 
     # ---------- RSI ----------
-
     def _calculate_RSI(
         self,
         closes: List[float],
         start_time: int,
         period: int = 14,
     ) -> RSISchema:
-        """
-        Рассчитывает RSI по списку цен закрытия.
-        """
         gains: list[float] = []
         losses: list[float] = []
 
@@ -51,74 +44,45 @@ class RSIIndicator(_KlinesBase):
         else:
             avg_gain = sum(gains[:period]) / period
             avg_loss = sum(losses[:period]) / period
-
             for i in range(period, len(gains)):
                 gain = gains[i]
                 loss = losses[i]
                 avg_gain = (avg_gain * (period - 1) + gain) / period
                 avg_loss = (avg_loss * (period - 1) + loss) / period
 
-        if avg_loss == 0:
-            rsi_value = 100.0
-        else:
-            rs = avg_gain / avg_loss
-            rsi_value = 100 - (100 / (1 + rs))
-
+        rsi_value = 100.0 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
         return RSISchema(
             value=round(rsi_value, 2),
             kline_ms=start_time,
             interval=self.interval,
         )
 
-    def current_RSI(
-        self,
-        period: int = 14,
-    ) -> RSISchema:
-        """
-        Текущее значение RSI.
-        """
+    def current_RSI(self, period: int = 14) -> RSISchema:
         history = self.history[-period:]
         if not history:
             raise ValueError("Недостаточно истории для RSI")
-
-        close_prices = [float(i.data[0].close) for i in history]
+        closes = [float(k.data[0].close) for k in history]
         start_time = int(history[-1].data[0].start)
+        return self._calculate_RSI(closes, start_time, period)
 
-        return self._calculate_RSI(close_prices, start_time, period)
-
-    def history_RSI(
-        self,
-        period: int = 14,
-    ) -> List[RSISchema]:
-        """
-        История RSI по каждой свече.
-        """
+    def history_RSI(self, period: int = 14) -> List[RSISchema]:
         rsi_values: list[RSISchema] = []
         total_candles = len(self.history)
-
         if total_candles < period:
             return rsi_values
 
         for i in range(total_candles - period + 1):
             window = self.history[i : i + period]
-            closes = [float(kline.data[0].close) for kline in window]
+            closes = [float(k.data[0].close) for k in window]
             start_time = int(window[-1].data[0].start)
-            rsi = self._calculate_RSI(closes, start_time, period)
-            rsi_values.append(rsi)
+            rsi_values.append(self._calculate_RSI(closes, start_time, period))
 
         return rsi_values
 
-    def load_history(
-        self,
-        period: int = 14,
-    ) -> None:
-        """
-        Загрузка истории индикатора
-        """
+    def load_history(self, period: int = 14) -> None:
         self.history_rsi = self.history_RSI(period=period)
 
     # ---------- STOCH RSI ----------
-
     def _calculate_stoch_RSI_from_history(
         self,
         history,
@@ -127,23 +91,18 @@ class RSIIndicator(_KlinesBase):
         k_period: int,
         d_period: int,
     ) -> StochRSISchema:
-        """
-        Расчёт Stochastic RSI по хвосту истории.
-        Берём только минимально необходимый кусок history.
-        """
         min_history = rsi_period + stoch_period + k_period + d_period
         if len(history) < min_history:
             raise ValueError("Недостаточно истории для Stoch RSI")
 
         tail = history[-min_history:]
-
         rsi_series: list[float] = []
+
         for i in range(len(tail) - rsi_period + 1):
-            sub_history = tail[i : i + rsi_period]
-            closes = [float(kline.data[0].close) for kline in sub_history]
-            start_time = int(sub_history[-1].data[0].start)
-            rsi = self._calculate_RSI(closes, start_time, rsi_period)
-            rsi_series.append(rsi.value)
+            sub = tail[i : i + rsi_period]
+            closes = [float(k.data[0].close) for k in sub]
+            start_time = int(sub[-1].data[0].start)
+            rsi_series.append(self._calculate_RSI(closes, start_time, rsi_period).value)
 
         if len(rsi_series) < stoch_period + k_period + d_period - 1:
             raise ValueError("Недостаточно RSI значений")
@@ -154,33 +113,15 @@ class RSIIndicator(_KlinesBase):
             rsi_now = window[-1]
             rsi_min = min(window)
             rsi_max = max(window)
-            if rsi_max == rsi_min:
-                stoch = 0.0
-            else:
-                stoch = (rsi_now - rsi_min) / (rsi_max - rsi_min)
-            stoch_rsi_series.append(stoch * 100)
-
-        if len(stoch_rsi_series) < k_period:
-            raise ValueError("Недостаточно stoch_rsi значений для сглаживания K")
+            stoch_rsi_series.append(0.0 if rsi_max == rsi_min else (rsi_now - rsi_min) / (rsi_max - rsi_min) * 100)
 
         k = simple_sma(stoch_rsi_series, k_period)
-
         d_values = [
             simple_sma(stoch_rsi_series[i - k_period + 1 : i + 1], k_period)
             for i in range(k_period - 1, len(stoch_rsi_series))
         ]
-        if len(d_values) < d_period:
-            raise ValueError("Недостаточно сглаженных K значений для расчёта D")
-
         d = simple_sma(d_values, d_period)
-
-        last_kline = tail[-1]
-        start_time = int(last_kline.data[0].start)
-
-        return StochRSISchema(
-            value=[round(k, 2), round(d, 2)],
-            kline_ms=start_time,
-        )
+        return StochRSISchema(value=[round(k, 2), round(d, 2)], kline_ms=int(tail[-1].data[0].start))
 
     def current_stoch_RSI(
         self,
@@ -189,13 +130,9 @@ class RSIIndicator(_KlinesBase):
         k_period: int = 3,
         d_period: int = 3,
     ) -> StochRSISchema:
-        """
-        Текущее значение Stochastic RSI (%K, %D)
-        """
         min_history = rsi_period + stoch_period + k_period + d_period
         if len(self.history) < min_history:
             raise ValueError("Недостаточно данных в history для расчета Stoch RSI")
-
         return self._calculate_stoch_RSI_from_history(
             self.history,
             rsi_period=rsi_period,
@@ -205,7 +142,6 @@ class RSIIndicator(_KlinesBase):
         )
 
     # ---------- PREDICT RSI ----------
-
     def predict_rsi(
         self,
         side: str,
@@ -214,39 +150,22 @@ class RSIIndicator(_KlinesBase):
         period: int = 14,
         max_iter: int = 40,
     ) -> Union[PredictRSIResultSchema, None]:
-        """
-        Подбор значения close, при котором RSI попадет в указанный диапазон.
-        Бинарный поиск по цене на последнем отрезке history[-period:].
-        """
         history = self.history[-period:]
         if not history:
             return None
 
-        closes = [float(i.data[0].close) for i in history]
+        closes = [float(k.data[0].close) for k in history]
         start_time = int(history[-1].data[0].start)
-
         from_lev, to_lev = map(float, target_range.split("-"))
         original_close = closes[-1]
 
-        if side == "buy":
-            lo = original_close * 0.5
-            hi = original_close
-        else:
-            lo = original_close
-            hi = original_close * 1.5
-
-        result_close = None
-        result_rsi = None
+        lo, hi = (original_close * 0.5, original_close) if side == "buy" else (original_close, original_close * 1.5)
+        result_close = result_rsi = None
 
         for _ in range(max_iter):
             mid = (lo + hi) / 2
             test_closes = closes[:-1] + [mid]
-
-            test_rsi = self._calculate_RSI(
-                test_closes,
-                start_time,
-                period,
-            ).value
+            test_rsi = self._calculate_RSI(test_closes, start_time, period).value
 
             if from_lev <= test_rsi <= to_lev:
                 result_close = mid
@@ -254,21 +173,16 @@ class RSIIndicator(_KlinesBase):
                 break
 
             if side == "buy":
-                if test_rsi > to_lev:
-                    hi = mid
-                else:
-                    lo = mid
+                hi = mid if test_rsi > to_lev else hi
+                lo = lo if test_rsi > to_lev else mid
             else:
-                if test_rsi < from_lev:
-                    lo = mid
-                else:
-                    hi = mid
+                lo = mid if test_rsi < from_lev else lo
+                hi = hi if test_rsi < from_lev else mid
 
         if result_close is None:
             return None
 
         delta_percent = ((result_close - original_close) / original_close) * 100
-
         return PredictRSIResultSchema(
             side=side,
             rate=round(result_close, 2),
@@ -279,7 +193,6 @@ class RSIIndicator(_KlinesBase):
         )
 
     # ---------- PREDICT STOCH RSI ----------
-
     def predict_stoch_rsi(
         self,
         side: str,
@@ -290,30 +203,16 @@ class RSIIndicator(_KlinesBase):
         d_period: int = 3,
         max_iter: int = 40,
     ) -> Union[PredictStochRSIResultSchema, None]:
-        """
-        Подбор close, при котором %K попадёт в указанный диапазон.
-        Бинарный поиск, перерасчёт Stoch RSI только по хвосту.
-        """
         min_history = rsi_period + stoch_period + k_period + d_period
         if len(self.history) < min_history:
             raise ValueError("Недостаточно истории для предсказания Stochastic RSI")
 
         from_lev, to_lev = map(float, target_range.split("-"))
-
         last_kline = self.history[-1]
         original_close = float(last_kline.data[0].close)
+        lo, hi = (original_close * 0.5, original_close) if side == "buy" else (original_close, original_close * 1.5)
 
-        if side == "buy":
-            lo = original_close * 0.5
-            hi = original_close
-        else:
-            lo = original_close
-            hi = original_close * 1.5
-
-        result_close = None
-        result_k = None
-        result_d = None
-        result_ms = None
+        result_close = result_k = result_d = result_ms = None
 
         try:
             for _ in range(max_iter):
@@ -327,27 +226,21 @@ class RSIIndicator(_KlinesBase):
                     k_period=k_period,
                     d_period=d_period,
                 )
+                k_val, d_val = stoch_rsi.value
 
-                k_value = stoch_rsi.value[0]
-                d_value = stoch_rsi.value[1]
-
-                if from_lev <= k_value <= to_lev:
+                if from_lev <= k_val <= to_lev:
                     result_close = mid
-                    result_k = k_value
-                    result_d = d_value
+                    result_k = k_val
+                    result_d = d_val
                     result_ms = stoch_rsi.kline_ms
                     break
 
                 if side == "buy":
-                    if k_value > to_lev:
-                        hi = mid
-                    else:
-                        lo = mid
+                    hi = mid if k_val > to_lev else hi
+                    lo = lo if k_val > to_lev else mid
                 else:
-                    if k_value < from_lev:
-                        lo = mid
-                    else:
-                        hi = mid
+                    lo = mid if k_val < from_lev else lo
+                    hi = hi if k_val < from_lev else mid
         finally:
             last_kline.data[0].close = original_close
 
@@ -355,7 +248,6 @@ class RSIIndicator(_KlinesBase):
             return None
 
         delta_percent = ((result_close - original_close) / original_close) * 100
-
         return PredictStochRSIResultSchema(
             side=side,
             rate=round(result_close, 2),

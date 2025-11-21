@@ -1,209 +1,257 @@
-from typing import List
+from typing import List, Optional
 import pandas as pd
 from klines.base import _KlinesBase
 from klines.schema.MACD import MACDSchema
 
 
 class MACDIndicator(_KlinesBase):
-    @staticmethod
-    def _calculate_MACD(
-            closes: List[float],
-            start_time: int
-    ) -> MACDSchema:
-        """
-        Вычисляет MACD, сигнальную линию и гистограмму.
-        """
-        df = pd.DataFrame(closes, columns=['close'])
+    """
+    Индикатор MACD, рассчитанный единообразно:
+    - EMA с adjust=False
+    - MACD/Signal/Hist считаются по всей истории, а не по "скользящим окнам"
+    """
 
-        # Параметры
-        span_12 = 12
-        span_26 = 26
-        span_signal = 9
+    # Параметры MACD по умолчанию
+    FAST_SPAN = 12
+    SLOW_SPAN = 26
+    SIGNAL_SPAN = 9
+
+    @classmethod
+    def _build_macd_df(
+        cls,
+        closes: List[float],
+        span_fast: int = FAST_SPAN,
+        span_slow: int = SLOW_SPAN,
+        span_signal: int = SIGNAL_SPAN,
+    ) -> pd.DataFrame:
+        """
+        Строит DataFrame с колонками:
+        close, EMA_fast, EMA_slow, MACD, Signal, Hist
+        На ВСЮ историю, как это делает нормальный терминал.
+        """
+        df = pd.DataFrame(closes, columns=["close"])
 
         # EMA
-        df['EMA_12'] = df['close'].ewm(span=span_12, adjust=False).mean()
-        df['EMA_26'] = df['close'].ewm(span=span_26, adjust=False).mean()
+        df["EMA_fast"] = df["close"].ewm(span=span_fast, adjust=False).mean()
+        df["EMA_slow"] = df["close"].ewm(span=span_slow, adjust=False).mean()
 
-        # MACD и Signal
-        df['MACD'] = df['EMA_12'] - df['EMA_26']
-        df['Signal_Line'] = df['MACD'].ewm(span=span_signal, adjust=True).mean()
-        df['MACD_Histogram'] = df['MACD'] - df['Signal_Line']
+        # MACD и сигнальная
+        df["MACD"] = df["EMA_fast"] - df["EMA_slow"]
+        df["Signal"] = df["MACD"].ewm(span=span_signal, adjust=False).mean()
+        df["Hist"] = df["MACD"] - df["Signal"]
 
+        return df
+
+    @classmethod
+    def _last_macd_schema(
+        cls,
+        df: pd.DataFrame,
+        kline_ms: int,
+        round_digits: int = 2,
+    ) -> MACDSchema:
+        """
+        Берёт последний ряд из df и упаковывает в MACDSchema.
+        """
+        last = df.iloc[-1]
         return MACDSchema(
-            hist=round(df['MACD_Histogram'].iloc[-1], 2),
-            macd=round(df['MACD'].iloc[-1], 2),
-            sign=round(df['Signal_Line'].iloc[-1], 2),
-            kline_ms=start_time
+            hist=round(float(last["Hist"]), round_digits),
+            macd=round(float(last["MACD"]), round_digits),
+            sign=round(float(last["Signal"]), round_digits),
+            kline_ms=kline_ms,
         )
 
+    # -------------------------------------------------------------------------
+    # Текущее значение MACD
+    # -------------------------------------------------------------------------
     def current_MACD(
-            self,
-            period: int = 26,
-    ):
+        self,
+        min_bars: int = 50,
+    ) -> Optional[MACDSchema]:
         """
-        Текущее значение MACD.
+        Текущее значение MACD по всей доступной истории.
+        min_bars — минимальное количество свечей для более-менее стабильного MACD.
         """
-        history = self.history[-period + 1:]
-        close_prices = [float(i.data[0].close) for i in history]
-        start_time = int(history[-1].data[0].start)
-        return self._calculate_MACD(close_prices, start_time)
+        if len(self.history) < min_bars:
+            return None  # или можешь бросать исключение, если так удобнее
 
+        closes = [float(i.data[0].close) for i in self.history]
+        df = self._build_macd_df(closes)
+
+        kline_ms = int(self.history[-1].data[0].start)
+        return self._last_macd_schema(df, kline_ms)
+
+    # -------------------------------------------------------------------------
+    # История MACD
+    # -------------------------------------------------------------------------
     def history_MACD(
-            self,
-            period: int = 30,
+        self,
+        length: int = 30,
+        min_bars: int = 50,
     ) -> List[MACDSchema]:
         """
-        Исторические значения MACD.
+        Возвращает последние `length` значений MACD.
+        MACD считается по всей истории, а не по скользящим окнам.
         """
-        macd_values = []
-        total_candles = len(self.history)
+        macd_values: List[MACDSchema] = []
 
-        if total_candles < period:
+        total_candles = len(self.history)
+        if total_candles < max(min_bars, length):
             return macd_values
 
-        for i in range(total_candles - period + 1):
-            window = self.history[i:i + period]
-            closes = [float(kline.data[0].close) for kline in window]
-            start_time = int(window[-1].data[0].start)
-            macd = self._calculate_MACD(closes, start_time)
-            macd_values.append(macd)
+        closes = [float(i.data[0].close) for i in self.history]
+        df = self._build_macd_df(closes)
+
+        # Берём последние `length` записей
+        length = min(length, len(df))
+        start_idx = len(df) - length
+
+        for idx in range(start_idx, len(df)):
+            row = df.iloc[idx]
+            candle = self.history[idx]  # тот же индекс для времени
+            kline_ms = int(candle.data[0].start)
+
+            macd_values.append(
+                MACDSchema(
+                    macd=round(float(row["MACD"]), 2),
+                    sign=round(float(row["Signal"]), 2),
+                    hist=round(float(row["Hist"]), 2),
+                    kline_ms=kline_ms,
+                )
+            )
 
         return macd_values
 
+    # -------------------------------------------------------------------------
+    # Прогноз MACD (наивная линейная экстраполяция цены)
+    # -------------------------------------------------------------------------
     def predict_MACD(
-            self,
-            steps_ahead: int = 7,
-            trend_window: int = 5
+        self,
+        steps_ahead: int = 7,
+        trend_window: int = 5,
     ) -> List[MACDSchema]:
         """
         Теоретический прогноз MACD на N свечей вперёд.
         Использует линейную экстраполяцию цены по последним трендам.
+        Очень грубая модель, использовать с осторожностью.
         """
         closes = [float(i.data[0].close) for i in self.history]
         if len(closes) < 30:
             raise ValueError("Недостаточно данных для прогноза (нужно хотя бы 30 свечей)")
 
-        df = pd.DataFrame(closes, columns=["close"])
+        df = self._build_macd_df(closes)
 
-        # Параметры MACD
-        span_12 = 12
-        span_26 = 26
-        span_signal = 9
-
-        # Расчёт текущих EMA и MACD
-        df["EMA_12"] = df["close"].ewm(span=span_12, adjust=False).mean()
-        df["EMA_26"] = df["close"].ewm(span=span_26, adjust=False).mean()
-        df["MACD"] = df["EMA_12"] - df["EMA_26"]
-        df["Signal_Line"] = df["MACD"].ewm(span=span_signal, adjust=False).mean()
-
-        last_close = df["close"].iloc[-1]
-        ema12 = df["EMA_12"].iloc[-1]
-        ema26 = df["EMA_26"].iloc[-1]
-        signal = df["Signal_Line"].iloc[-1]
+        # Текущие значения
+        last_close = float(df["close"].iloc[-1])
+        ema_fast = float(df["EMA_fast"].iloc[-1])
+        ema_slow = float(df["EMA_slow"].iloc[-1])
+        signal = float(df["Signal"].iloc[-1])
 
         # Коэффициенты сглаживания
-        alpha_12 = 2 / (span_12 + 1)
-        alpha_26 = 2 / (span_26 + 1)
-        alpha_signal = 2 / (span_signal + 1)
+        alpha_fast = 2 / (self.FAST_SPAN + 1)
+        alpha_slow = 2 / (self.SLOW_SPAN + 1)
+        alpha_signal = 2 / (self.SIGNAL_SPAN + 1)
 
-        # Простейший тренд (линейная экстраполяция)
+        # Линейный тренд
         trend = (df["close"].iloc[-1] - df["close"].iloc[-trend_window]) / trend_window
 
-        macd_values = []
+        macd_values: List[MACDSchema] = []
         start_time = int(self.history[-1].data[0].start)
-        step_ms = self.interval * 60_000  # шаг времени в мс
+        step_ms = self.interval * 60_000  # минутный интервал в мс
 
-        for i in range(1, steps_ahead + 1):
-            next_close = last_close + trend * i
+        for step in range(1, steps_ahead + 1):
+            next_close = last_close + trend * step
 
             # обновляем EMA
-            ema12 = (next_close - ema12) * alpha_12 + ema12
-            ema26 = (next_close - ema26) * alpha_26 + ema26
+            ema_fast = (next_close - ema_fast) * alpha_fast + ema_fast
+            ema_slow = (next_close - ema_slow) * alpha_slow + ema_slow
 
-            macd = ema12 - ema26
+            macd = ema_fast - ema_slow
             signal = (macd - signal) * alpha_signal + signal
             hist = macd - signal
 
-            macd_values.append(MACDSchema(
-                macd=round(macd, 4),
-                sign=round(signal, 4),
-                hist=round(hist, 4),
-                kline_ms=start_time + i * step_ms
-            ))
+            macd_values.append(
+                MACDSchema(
+                    macd=round(float(macd), 4),
+                    sign=round(float(signal), 4),
+                    hist=round(float(hist), 4),
+                    kline_ms=start_time + step * step_ms,
+                )
+            )
 
         return macd_values
-    
+
+    # -------------------------------------------------------------------------
+    # Поиск ближайшего разворота MACD (пересечение с Signal)
+    # -------------------------------------------------------------------------
     def predict_MACD_reversal(
-            self,
-            trend_window: int = 5,
-            max_steps: int = 50,
-            scenario: str = "auto"
+        self,
+        trend_window: int = 5,
+        max_steps: int = 50,
+        scenario: str = "auto",
     ):
         """
-        Поиск вероятного разворота MACD (точка пересечения MACD и сигнальной линии).
+        Поиск вероятного разворота MACD (пересечение MACD и сигнальной линии).
         scenario: "auto", "bullish", "bearish"
+        auto: направление выбирается на основе знака текущей гистограммы.
         """
         closes = [float(i.data[0].close) for i in self.history]
         if len(closes) < 30:
             raise ValueError("Недостаточно данных для анализа разворота")
 
-        df = pd.DataFrame(closes, columns=["close"])
+        df = self._build_macd_df(closes)
 
-        # --- Параметры MACD ---
-        span_12, span_26, span_signal = 12, 26, 9
-        alpha_12 = 2 / (span_12 + 1)
-        alpha_26 = 2 / (span_26 + 1)
-        alpha_signal = 2 / (span_signal + 1)
+        # Текущие значения
+        last_close = float(df["close"].iloc[-1])
+        ema_fast = float(df["EMA_fast"].iloc[-1])
+        ema_slow = float(df["EMA_slow"].iloc[-1])
+        signal = float(df["Signal"].iloc[-1])
+        hist = float(df["Hist"].iloc[-1])
 
-        # --- Текущие значения ---
-        df["EMA_12"] = df["close"].ewm(span=span_12, adjust=False).mean()
-        df["EMA_26"] = df["close"].ewm(span=span_26, adjust=False).mean()
-        df["MACD"] = df["EMA_12"] - df["EMA_26"]
-        df["Signal"] = df["MACD"].ewm(span=span_signal, adjust=False).mean()
+        # Коэффициенты сглаживания
+        alpha_fast = 2 / (self.FAST_SPAN + 1)
+        alpha_slow = 2 / (self.SLOW_SPAN + 1)
+        alpha_signal = 2 / (self.SIGNAL_SPAN + 1)
 
-        last_close = df["close"].iloc[-1]
-        ema12 = df["EMA_12"].iloc[-1]
-        ema26 = df["EMA_26"].iloc[-1]
-        signal = df["Signal"].iloc[-1]
-        hist = ema12 - ema26 - signal
-
-        # --- Направление тренда ---
-        trend = (df["close"].iloc[-1] - df["close"].iloc[-trend_window]) / trend_window
+        # Направление тренда по сценарию
+        base_trend = (df["close"].iloc[-1] - df["close"].iloc[-trend_window]) / trend_window
 
         if scenario == "bullish":
-            trend = abs(trend)
+            trend = abs(base_trend) if base_trend != 0 else abs(df["close"].pct_change().iloc[-1]) * last_close
         elif scenario == "bearish":
-            trend = -abs(trend)
-        elif scenario == "auto":
-            # если текущая гистограмма положительная — ищем вниз, иначе вверх
-            trend = -abs(trend) if hist > 0 else abs(trend)
+            trend = -abs(base_trend) if base_trend != 0 else -abs(df["close"].pct_change().iloc[-1]) * last_close
+        else:  # auto
+            if hist > 0:
+                trend = -abs(base_trend) if base_trend != 0 else -abs(df["close"].pct_change().iloc[-1]) * last_close
+            else:
+                trend = abs(base_trend) if base_trend != 0 else abs(df["close"].pct_change().iloc[-1]) * last_close
 
         start_time = int(self.history[-1].data[0].start)
         step_ms = self.interval * 60_000
 
         prev_hist = hist
-        for i in range(1, max_steps + 1):
-            next_close = last_close + trend * i
 
-            ema12 = (next_close - ema12) * alpha_12 + ema12
-            ema26 = (next_close - ema26) * alpha_26 + ema26
+        for step in range(1, max_steps + 1):
+            next_close = last_close + trend * step
 
-            macd = ema12 - ema26
+            ema_fast = (next_close - ema_fast) * alpha_fast + ema_fast
+            ema_slow = (next_close - ema_slow) * alpha_slow + ema_slow
+
+            macd = ema_fast - ema_slow
             signal = (macd - signal) * alpha_signal + signal
             hist = macd - signal
 
-            # Проверяем смену знака гистограммы
+            # смена знака гистограммы = пересечение MACD и Signal
             if (prev_hist > 0 and hist <= 0) or (prev_hist < 0 and hist >= 0):
                 return {
-                    "step": i,
-                    "predicted_close": round(next_close, 4),
-                    "macd": round(macd, 4),
-                    "signal": round(signal, 4),
-                    "hist": round(hist, 4),
-                    "time_ms": start_time + i * step_ms,
-                    "direction": "bearish" if prev_hist > 0 else "bullish"
+                    "step": step,
+                    "predicted_close": round(float(next_close), 4),
+                    "macd": round(float(macd), 4),
+                    "signal": round(float(signal), 4),
+                    "hist": round(float(hist), 4),
+                    "time_ms": start_time + step * step_ms,
+                    "direction": "bearish" if prev_hist > 0 else "bullish",
                 }
 
             prev_hist = hist
 
-        return None  # если разворот не найден в пределах max_steps
+        return None  # разворот не найден в пределах max_steps

@@ -1,5 +1,4 @@
 import json
-
 from typing import List
 
 from dotenv import load_dotenv
@@ -10,16 +9,19 @@ from klines.utils import ms_to_dt
 
 
 def list_to_schema(
-        interval,
-        symbol,
+        interval: int,
+        symbol: str,
         data,
-):
+) -> List[KlineSchema]:
     """
-    Преобразовать список свечей в список схем
+    Преобразовать список свечей (dict) в список KlineSchema.
+    Возвращает в порядке старая -> новая.
     """
-    result = []
+    result: List[KlineSchema] = []
     for k in reversed(data):
+        # если вдруг уже KlineSchema — пропускаем
         if isinstance(k, KlineSchema):
+            result.append(k)
             continue
         kline = KlineSchema(
             topic=f'kline.{interval}.{symbol}',
@@ -35,7 +37,7 @@ def list_to_schema(
                     low=k['l'],
                     volume=k['v'],
                     turnover=k['t'],
-                    dt=k['dt']
+                    dt=k['dt'],
                 )
             ],
         )
@@ -54,7 +56,6 @@ class _KlinesBase:
     exchange: str
 
     last_kline: CandleSchema
-
     redis_candles: Redis
 
     def __init__(
@@ -72,83 +73,108 @@ class _KlinesBase:
         self.exchange = exchange
         self.end = end
         self.redis_candles = redis_candles
-        self.history = self._get_history()
-        print(f'[{symbol} {interval}] История загружена [{len(self.history)} свечей]')
-        self.check_and_trim_history()
-        self.length = len(self.history)
-        self.last_kline = self.history[-1].data[0]
-        self.check_kline_sequence()
 
+        self.history: List[KlineSchema] = self._get_history()
+        if not self.history:
+            print('Ошибка получения свечей истории')
+            raise RuntimeError('Empty history')
+
+        # Подрезаем историю и синхронизируем метаданные
+        self._check_and_trim_history()
+
+        # Однократная проверка последовательности при старте (по всей истории)
+        self._check_full_sequence_once()
+
+        print(f'[{self.symbol} {self.interval}] История загружена [{len(self.history)} свечей]')
+
+    # -------------------------------------------------------------------------
+    # Свойства для удобного отображения
+    # -------------------------------------------------------------------------
     @property
     def start_str(self) -> str:
-        """
-        Возвращает start в формате: timestamp | дата-время
-        """
         dt = ms_to_dt(self.start)
         return f"{self.start} | {dt}"
 
     @property
     def end_str(self) -> str:
-        """
-        Возвращает end в формате: timestamp | дата-время
-        """
-        if self.end is None:
+        if self.end is None and self.history:
             return self.history[-1].data[0].start_str
         dt = ms_to_dt(self.end)
         return f"{self.end} | {dt}"
 
-
-    def _get_history(self,) -> List[KlineSchema]:
+    # -------------------------------------------------------------------------
+    # Загрузка истории
+    # -------------------------------------------------------------------------
+    def _get_history(self) -> List[KlineSchema]:
         """
-        Возвращает список свечей в порядке старая -> новая
+        Возвращает список свечей (старая -> новая) из Redis.
         """
         load_dotenv()
-
         key = f'candles:{self.symbol}:{self.interval}:{self.exchange}'
-        res = self.redis_candles.zrevrange(key, 0, 999)  # с конца (самые новые)
+        # самые новые сначала
+        res = self.redis_candles.zrevrange(key, 0, self.max_length - 1)
         if not res:
-            print('Ошибка получения свечей истории')
-            exit()
+            return []
         klines = [json.loads(i) for i in res]
         return list_to_schema(
             interval=self.interval,
             symbol=self.symbol,
-            data=klines
+            data=klines,
         )
 
-    def check_kline_sequence(self) -> bool:
+    # -------------------------------------------------------------------------
+    # Проверка полной последовательности (ТОЛЬКО при старте)
+    # -------------------------------------------------------------------------
+    def _check_full_sequence_once(self) -> bool:
         """
-        Проверим что все свечи последовательны
-        Нужно что бы убедиться в корректности истории
-        Возможно потеря соединения/баг и прочие условия вызывающие
-        нарушение интервала свечей
+        Однократная проверка корректности истории при инициализации.
+        Без рекурсии и перезагрузок.
         """
         expected_diff = self.interval * 60 * 1000
+        ok = True
 
         for i in range(1, len(self.history)):
             prev = self.history[i - 1].data[0].start
             curr = self.history[i].data[0].start
             if curr - prev != expected_diff:
-                print('Последовательность нарушена!')
-                history = self._get_history()
-
-                self.history = list_to_schema(
-                    interval=self.interval,
-                    symbol=self.symbol,
-                    data=history
+                print(
+                    f'Предупреждение: последовательность нарушена '
+                    f'между индексами {i - 1} и {i}: {curr - prev} != {expected_diff}'
                 )
-                print('Последовательность восстановлена!')
-                self.check_kline_sequence()
-                return True
+                ok = False
+                # дальше можно либо продолжить, либо выйти — оставим продолжение
+        return ok
+
+    # -------------------------------------------------------------------------
+    # Локальная проверка последовательности по последним двум свечам
+    # -------------------------------------------------------------------------
+    def _check_tail_sequence(self) -> bool:
+        """
+        Быстрая проверка последовательности по последним двум свечам.
+        Используется только при добавлении новой свечи.
+        """
+        if len(self.history) < 2:
+            return True
+
+        expected_diff = self.interval * 60 * 1000
+        prev = self.history[-2].data[0].start
+        curr = self.history[-1].data[0].start
+
+        if curr - prev != expected_diff:
+            print(
+                f'Предупреждение: последовательность нарушена по последней свече: '
+                f'{curr - prev} != {expected_diff} ({prev} -> {curr})'
+            )
+            return False
         return True
 
+    # -------------------------------------------------------------------------
+    # Валидация свечи
+    # -------------------------------------------------------------------------
     def is_valid_kline_to_history(
             self,
             kline: KlineSchema,
     ) -> bool:
-        """
-        Проверяет что свеча относится к этой истории
-        """
         if kline.symbol != self.symbol:
             print(f'Свеча не того символа: {kline.symbol} != {self.symbol}')
             return False
@@ -157,72 +183,91 @@ class _KlinesBase:
             return False
         return True
 
-    def check_and_trim_history(
-            self,
-    ):
+    # -------------------------------------------------------------------------
+    # Обрезка истории и синхронизация метаданных
+    # -------------------------------------------------------------------------
+    def _check_and_trim_history(self) -> bool:
         """
-        Обрезание истории по максимальной длине
-
-        Проверяем длину истории
-
-        Если длина превышена сокращаем историю
+        Подрезает историю по max_length и обновляет start/end/last_kline/length.
         """
         history_length = len(self.history)
+        if history_length == 0:
+            return False
+
         if history_length > self.max_length:
             self.history = self.history[-self.max_length:]
-            self.start = self.history[0].data[0].start
+            history_length = len(self.history)
+
+        self.start = self.history[0].data[0].start
+        self.end = self.history[-1].data[0].start
+        self.last_kline = self.history[-1].data[0]
+        self.length = history_length
         return True
 
+    # -------------------------------------------------------------------------
+    # Внутреннее обновление последней свечи
+    # -------------------------------------------------------------------------
     def _update(
             self,
             kline: KlineSchema,
     ) -> bool:
         """
-        Обновляем значение
+        Обновляет последнюю свечу (bybit kline.update).
         """
         self.history[-1] = kline
+        self.last_kline = kline.data[0]
         self.end = kline.data[0].start
+        # длина не меняется
         return True
 
+    # -------------------------------------------------------------------------
+    # Внутреннее добавление новой свечи
+    # -------------------------------------------------------------------------
     def _add(
             self,
             kline: KlineSchema,
     ) -> bool:
         """
-        Добавляем новую свечу
+        Добавляет новую свечу в конец (закрытие старой + открытие новой).
         """
-        # Добавляем в конец
         self.history.append(kline)
-        self.check_and_trim_history()
-
-        # Устанавливаем новое время актуальной свечи
-        self.end = self.history[-1].data[0].start
-
-        # Проверяем валидность истории
-        self.check_kline_sequence()
+        # подрезаем историю + обновляем start/end/last_kline/length
+        self._check_and_trim_history()
+        # проверяем только последнюю пару
+        self._check_tail_sequence()
         return True
 
+    # -------------------------------------------------------------------------
+    # Публичный метод обновления истории
+    # -------------------------------------------------------------------------
     def update(
             self,
             kline: KlineSchema,
     ) -> bool:
         """
-        Сюда отправляем обновления свечей
+        Принимает обновление свечей from bybit kline.update:
 
-        Если свеча уже есть в истории - обновляем ее
-        Если свеча новая - добавляем в конец
-        Так же проверяем длину истории
+        - если start совпадает с последней свечой — обновляем её
+        - если start больше — добавляем новую свечу в конец
         """
         if not self.is_valid_kline_to_history(kline):
             return False
-        # Если свеча есть - обновляем
-        if kline.data[0].start == self.last_kline.start:
-            # заменяем последнюю свечу
-            if self._update(kline):
-                self.last_kline = kline.data[-1]
-                return True
-        # Если свечи нет
-        if kline.data[0].start != self.last_kline.start:
-            if self._add(kline):
-                self.last_kline = kline.data[-1]
-                return True
+
+        k_start = kline.data[0].start
+        last_start = self.last_kline.start
+
+        # обновление текущей (незакрывшейся) свечи
+        if k_start == last_start:
+            return self._update(kline)
+
+        # новая свеча
+        if k_start > last_start:
+            return self._add(kline)
+
+        # историческое обновление или мусор — игнорируем
+        # (bybit update обычно не шлёт "старые" свечи, но на всякий случай)
+        print(
+            f'Предупреждение: получена свеча с прошедшим временем '
+            f'{k_start} < {last_start}, игнор.'
+        )
+        return False
